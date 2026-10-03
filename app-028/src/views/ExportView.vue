@@ -8,7 +8,7 @@ import {
   allSizes,
   getTask,
   makePhotoResolver,
-  makeThumbResolver,
+  photoCoverage,
   photoVersion,
   sheetsOf,
 } from '../store'
@@ -33,15 +33,21 @@ const dpi = ref(300)
 const busy = ref(false)
 const message = ref('')
 
-const thumbs = computed(() => {
-  void photoVersion.value
-  return task.value ? makeThumbResolver(task.value, sheets.value) : () => undefined
-})
-
-function photoResolver() {
+const resolver = computed(() => {
   void photoVersion.value
   return task.value ? makePhotoResolver(task.value, sheets.value) : () => undefined
+})
+const thumbs = computed(() => (p: Placement) => resolver.value(p)?.url)
+const fallbackOf = computed(() => (p: Placement) => resolver.value(p)?.fallback ?? false)
+
+function photoResolver() {
+  return resolver.value
 }
+
+const coverage = computed(() => {
+  void photoVersion.value
+  return task.value ? photoCoverage(task.value, sheets.value) : { missing: 0, fallback: 0 }
+})
 
 function sizeLabelOf(p: Placement): string {
   const t = task.value
@@ -196,6 +202,10 @@ function printView() {
     </div>
 
     <div v-if="message" class="note no-print" :class="valid ? 'ok' : 'danger'">{{ message }}</div>
+    <div v-if="coverage.fallback > 0" class="note warn no-print">
+      有 {{ coverage.fallback }} 张照片未选专属底片，导出稿中会用第 1 张底片顶替并标注 fallback；
+      <router-link :to="`/`">回新建页</router-link>可逐槽补齐
+    </div>
     <div v-if="!valid" class="note danger no-print">
       手工微调后的排样不满足 guillotine 贯通裁切，导出已停用：{{ task.manual?.message }}
     </div>
@@ -284,6 +294,7 @@ function printView() {
               :safe-edge-mm="task.safeEdgeMm"
               :scale="Math.max(0.5, Math.min(2.2, 700 / paper.wMm))"
               :thumb-of="thumbs"
+              :fallback-of="fallbackOf"
             />
           </div>
         </div>
@@ -304,6 +315,7 @@ function printView() {
           :header-text="task.headerText"
           :footer-text="task.footerText"
           :thumb-of="thumbs"
+          :fallback-of="fallbackOf"
         />
       </div>
       <div class="print-sheet" style="width: 210mm; height: 297mm; padding: 15mm 0 0 15mm">

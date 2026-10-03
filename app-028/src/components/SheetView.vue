@@ -21,6 +21,8 @@ const props = withDefaults(
     headerText?: string
     footerText?: string
     thumbOf?: (p: Placement) => string | undefined
+    /** 该位置没有专属底片，用第 1 张底片顶替 */
+    fallbackOf?: (p: Placement) => boolean
     labelOf?: (itemId: string) => string
   }>(),
   {
@@ -39,6 +41,7 @@ const props = withDefaults(
     headerText: '',
     footerText: '',
     thumbOf: undefined,
+    fallbackOf: undefined,
     labelOf: undefined,
   },
 )
@@ -220,7 +223,16 @@ const showDetail = computed(() => props.scale >= 1.6 || props.unit === 'mm')
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
     >
-      <img v-if="thumbOf && thumbOf(p)" :src="thumbOf(p)" alt="" draggable="false" />
+      <img
+        v-if="thumbOf && thumbOf(p)"
+        :src="thumbOf(p)"
+        alt=""
+        draggable="false"
+        :style="fallbackOf && fallbackOf(p) ? { opacity: 0.55 } : undefined"
+      />
+      <span v-if="fallbackOf && fallbackOf(p)" class="ph-fallback" :style="{ fontSize: textXs }" title="该位置未选底片，用第 1 张底片顶替">
+        顶替
+      </span>
       <template v-if="showNumbers">
         <span class="ph-no" :style="{ fontSize: textSm }">#{{ p.seq }}</span>
         <span v-if="showDetail" class="ph-dim" :style="{ fontSize: textXs }">

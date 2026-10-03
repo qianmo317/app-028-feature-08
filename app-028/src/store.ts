@@ -82,6 +82,62 @@ export function clearItemPhoto(key: string): void {
   photoVersion.value++
 }
 
+/** 清掉某条清单对应的全部底片（删除清单条目时调用，避免内存里残留） */
+export function clearItemPhotos(itemId: string): void {
+  const prefix = `${itemId}#`
+  let changed = false
+  for (const key of Array.from(photoCache.keys())) {
+    if (!key.startsWith(prefix)) continue
+    const old = photoCache.get(key)
+    if (old) URL.revokeObjectURL(old.url)
+    photoCache.delete(key)
+    changed = true
+  }
+  if (changed) photoVersion.value++
+}
+
+/** 清掉不属于任何已保存任务（也可额外传入当前草稿条目）的底片 */
+export function pruneOrphanPhotos(validItemIds: Set<string> = new Set()): void {
+  for (const t of tasks.value) for (const i of t.items) validItemIds.add(i.id)
+  let changed = false
+  for (const key of Array.from(photoCache.keys())) {
+    const itemId = key.slice(0, key.indexOf('#'))
+    if (validItemIds.has(itemId)) continue
+    const old = photoCache.get(key)
+    if (old) URL.revokeObjectURL(old.url)
+    photoCache.delete(key)
+    changed = true
+  }
+  if (changed) photoVersion.value++
+}
+
+/** 某条清单已导入的底片份数（「只出现一次」时用于判断空位） */
+export function itemPhotoCount(itemId: string): number {
+  const prefix = `${itemId}#`
+  let n = 0
+  for (const key of photoCache.keys()) {
+    if (key.startsWith(prefix)) n++
+  }
+  return n
+}
+
+/** 数量减少 / 改为「重复排」时，把多余槽位的底片清掉 */
+export function trimItemPhotos(itemId: string, keepCount: number): void {
+  const prefix = `${itemId}#`
+  let changed = false
+  for (const key of Array.from(photoCache.keys())) {
+    if (!key.startsWith(prefix)) continue
+    const idx = Number(key.slice(prefix.length))
+    if (Number.isInteger(idx) && idx >= keepCount) {
+      const old = photoCache.get(key)
+      if (old) URL.revokeObjectURL(old.url)
+      photoCache.delete(key)
+      changed = true
+    }
+  }
+  if (changed) photoVersion.value++
+}
+
 /** 每张照片（placement）对应第几张底片 */
 export function copyIndexMap(sheets: Sheet[]): Map<number, number> {
   const counter = new Map<string, number>()
@@ -96,15 +152,29 @@ export function copyIndexMap(sheets: Sheet[]): Map<number, number> {
   return out
 }
 
+export interface ResolvedPhoto {
+  key: string
+  url: string
+  /** true = 该位置没有专属底片，按任务设置回退用了第 1 张底片 */
+  fallback: boolean
+}
+
 /** placement -> 本机照片（key + objectURL），未导入照片时返回 undefined */
 export function makePhotoResolver(task: Task, sheets: Sheet[]) {
   const map = copyIndexMap(sheets)
   const repeat = new Map(task.items.map((i) => [i.id, i.repeatSamePhoto]))
-  return (p: Placement): { key: string; url: string } | undefined => {
-    const ci = repeat.get(p.itemId) === false ? map.get(p.seq) ?? 0 : 0
+  return (p: Placement): ResolvedPhoto | undefined => {
+    const once = repeat.get(p.itemId) === false
+    const ci = once ? map.get(p.seq) ?? 0 : 0
     const k = photoKey(p.itemId, ci)
     const ph = getItemPhoto(k)
-    return ph ? { key: k, url: ph.url } : undefined
+    if (ph) return { key: k, url: ph.url, fallback: false }
+    // 「只出现一次」且该空位没选底片：按任务设置决定是否用第 1 张顶替
+    if (once && ci > 0 && task.fallbackFirstPhoto) {
+      const first = getItemPhoto(photoKey(p.itemId, 0))
+      if (first) return { key: photoKey(p.itemId, 0), url: first.url, fallback: true }
+    }
+    return undefined
   }
 }
 
@@ -112,6 +182,21 @@ export function makePhotoResolver(task: Task, sheets: Sheet[]) {
 export function makeThumbResolver(task: Task, sheets: Sheet[]) {
   const resolve = makePhotoResolver(task, sheets)
   return (p: Placement): string | undefined => resolve(p)?.url
+}
+
+/** 当前版面上的底片缺失情况：未选底片总数、其中用第 1 张顶替的数量 */
+export function photoCoverage(task: Task, sheets: Sheet[]): { missing: number; fallback: number } {
+  const resolve = makePhotoResolver(task, sheets)
+  let missing = 0
+  let fallback = 0
+  for (const s of sheets) {
+    for (const p of s.placements) {
+      const r = resolve(p)
+      if (!r) missing++
+      else if (r.fallback) fallback++
+    }
+  }
+  return { missing, fallback }
 }
 
 export function getTask(id: string): Task | undefined {
@@ -131,6 +216,7 @@ export function createTask(partial: Partial<Task> = {}): Task {
     allowRotate: partial.allowRotate ?? settings.value.allowRotate,
     headerText: partial.headerText ?? '',
     footerText: partial.footerText ?? '',
+    fallbackFirstPhoto: partial.fallbackFirstPhoto ?? false,
     createdAt: Date.now(),
   }
   tasks.value.unshift(task)
@@ -138,6 +224,8 @@ export function createTask(partial: Partial<Task> = {}): Task {
 }
 
 export function deleteTask(id: string): void {
+  const t = tasks.value.find((x) => x.id === id)
+  if (t) for (const item of t.items) clearItemPhotos(item.id)
   tasks.value = tasks.value.filter((t) => t.id !== id)
 }
 

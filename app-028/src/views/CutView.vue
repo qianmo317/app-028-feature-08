@@ -3,9 +3,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SheetView from '../components/SheetView.vue'
 import RulerScale from '../components/RulerScale.vue'
-import { allPapers, getTask, makeThumbResolver, photoVersion, sheetsOf } from '../store'
+import { allPapers, getTask, makePhotoResolver, photoVersion, sheetsOf } from '../store'
 import { resolvePaper } from '../logic/library'
-import type { CutStep, Task } from '../logic/types'
+import type { CutStep, Placement, Task } from '../logic/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,10 +22,12 @@ const sheet = computed(() => sheets.value[Math.min(activeSheet.value, sheets.val
 const steps = computed(() => sheet.value?.cutSteps ?? [])
 const totalSteps = computed(() => steps.value.length)
 
-const thumbs = computed(() => {
+const resolver = computed(() => {
   void photoVersion.value
-  return task.value ? makeThumbResolver(task.value, sheets.value) : () => undefined
+  return task.value ? makePhotoResolver(task.value, sheets.value) : () => undefined
 })
+const thumbs = computed(() => (p: Placement) => resolver.value(p)?.url)
+const fallbackOf = computed(() => (p: Placement) => resolver.value(p)?.fallback ?? false)
 
 const scale = computed(() => {
   const p = paper.value
@@ -154,6 +156,7 @@ function goto(routeName: string) {
               :done-count="step"
               :show-cut-labels="true"
               :thumb-of="thumbs"
+              :fallback-of="fallbackOf"
             />
           </div>
         </div>

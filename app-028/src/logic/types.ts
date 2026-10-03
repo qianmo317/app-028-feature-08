@@ -124,6 +124,8 @@ export interface Task {
   allowRotate: boolean
   headerText: string
   footerText: string
+  /** 「一张照片只出现一次」时，未选底片的空位是否允许用第 1 张底片顶替（默认 false = 拦住不让排） */
+  fallbackFirstPhoto: boolean
   createdAt: number
   /** 手工微调过的排样（存在时优先于自动排样结果） */
   manual?: {

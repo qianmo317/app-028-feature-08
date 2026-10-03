@@ -372,6 +372,7 @@ async function assertExport1to1(): Promise<AssertionResult> {
     allowRotate: false,
     headerText: '自检页眉',
     footerText: '2026-09-20',
+    fallbackFirstPhoto: false,
     createdAt: 0,
   }
   const blob = await buildPdf({

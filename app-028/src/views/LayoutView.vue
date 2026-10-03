@@ -8,8 +8,9 @@ import {
   allPapers,
   allSizes,
   getTask,
-  makeThumbResolver,
+  makePhotoResolver,
   manualPlacementsOf,
+  photoCoverage,
   resetManual,
   setManual,
   sheetsOf,
@@ -40,9 +41,21 @@ const totalPhotos = computed(() =>
 const totalSteps = computed(() => sheets.value.reduce((acc, s) => acc + s.cutSteps.length, 0))
 const rawSteps = computed(() => sheets.value.reduce((acc, s) => acc + s.rawCutCount, 0))
 
-const thumbs = computed(() => {
+const resolver = computed(() => {
   void photoVersion.value
-  return task.value ? makeThumbResolver(task.value, sheets.value) : () => undefined
+  return task.value ? makePhotoResolver(task.value, sheets.value) : () => undefined
+})
+const thumbs = computed(() => {
+  const r = resolver.value
+  return (p: Placement) => r(p)?.url
+})
+/** 空位用第 1 张底片顶替的位置（纸面上半透明标出） */
+const fallbackOf = computed(() => (p: Placement) => resolver.value(p)?.fallback ?? false)
+
+/** 当前版面底片覆盖：未导入 / 顶替 各多少 */
+const coverage = computed(() => {
+  void photoVersion.value
+  return task.value ? photoCoverage(task.value, sheets.value) : { missing: 0, fallback: 0 }
 })
 
 /** 拖动中用本地覆盖，避免每帧全量校验 */
@@ -282,6 +295,13 @@ watch(
     </div>
 
     <div v-if="localMsg" class="note">{{ localMsg }}</div>
+    <div v-if="coverage.fallback > 0" class="note warn">
+      有 {{ coverage.fallback }} 个位置未选专属底片，正在用该尺寸的第 1 张底片顶替（纸面上以半透明「顶替」标出）；
+      如需逐张对应，请回新建页补齐底片槽
+    </div>
+    <div v-if="coverage.missing > 0" class="note">
+      有 {{ coverage.missing }} 个位置没有任何底片，纸面与导出中只显示编号占位
+    </div>
     <div
       v-if="manual"
       class="note"
@@ -321,6 +341,7 @@ watch(
               draggable
               :show-cut-labels="true"
               :thumb-of="thumbs"
+              :fallback-of="fallbackOf"
               @move="onMove"
               @moveend="onMoveEnd"
               @select="(seq) => (selectedSeq = seq)"

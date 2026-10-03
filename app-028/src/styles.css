@@ -504,6 +504,16 @@ table.data tr:hover td {
   padding: 0 3px;
   margin-top: 2px;
 }
+.ph .ph-fallback {
+  position: relative;
+  font-size: 9px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid #f0dab0;
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-top: 2px;
+}
 .cutline {
   position: absolute;
   background: #b9c2ce;
@@ -575,6 +585,118 @@ table.data tr:hover td {
   width: 26px;
   text-align: right;
   color: var(--ink-3);
+}
+
+/* ---------- 底片槽位条 ---------- */
+.film-band {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px dashed transparent;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.film-band.drop-active {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+.film-slot {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: block;
+  flex: none;
+}
+.film-slot.empty {
+  border: 1.5px dashed #b6c1d0;
+  background: #f4f7fb;
+}
+.film-slot.empty .film-plus {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a8b4c4;
+  font-size: 16px;
+  font-weight: 600;
+}
+.film-slot.filled {
+  border: 1px solid var(--line);
+  background: #fff;
+}
+.film-slot.filled img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 5px;
+  display: block;
+}
+.film-slot.empty.strict {
+  border-color: #e3a95e;
+  background: var(--warn-soft);
+}
+.film-slot.target {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 2px var(--brand-soft);
+}
+.film-idx {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  font-size: 9px;
+  line-height: 1;
+  font-family: var(--font-mono);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ink-2);
+  border-radius: 3px;
+  padding: 1px 3px;
+  pointer-events: none;
+}
+.film-slot.empty .film-idx {
+  background: rgba(255, 255, 255, 0.7);
+}
+.film-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid #d9a2a2;
+  background: #fff;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.film-slot:hover .film-x {
+  display: flex;
+}
+.film-warn-dot {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--warn);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #fff;
 }
 
 /* ---------- 打印 ---------- */

@@ -8,7 +8,7 @@ export interface PngBuildInput {
   paper: Paper
   sheet: Sheet
   dpi: number
-  photoOf: (p: Placement) => { key: string; url: string } | undefined
+  photoOf: (p: Placement) => { key: string; url: string; fallback?: boolean } | undefined
   sizeLabelOf: (p: Placement) => string
   /** 纸张外侧留出的标注带宽度（mm），保证校验尺与裁切标记不被裁掉 */
   borderMm?: number
@@ -74,6 +74,16 @@ export async function buildSheetPng(input: PngBuildInput): Promise<Blob> {
         const dw = img.naturalWidth * scale
         const dh = img.naturalHeight * scale
         ctx.drawImage(img, X(p.x) + (p.w * k - dw) / 2, Y(p.y) + (p.h * k - dh) / 2, dw, dh)
+        if (ref.fallback) {
+          // 顶替位置：半透明白罩 + 角标，避免误以为是该位置的专属底片
+          ctx.fillStyle = 'rgba(255,255,255,0.45)'
+          ctx.fillRect(X(p.x), Y(p.y), p.w * k, p.h * k)
+          ctx.fillStyle = '#b26a00'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'bottom'
+          ctx.font = `${Math.max(7, 2.6 * k)}px system-ui, sans-serif`
+          ctx.fillText('顶替', X(p.x + p.w / 2), Y(p.y + p.h) - 0.8 * k)
+        }
         ctx.restore()
       } catch {
         ctx.fillStyle = '#eef2f7'

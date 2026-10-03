@@ -23,6 +23,8 @@ function ascii(s: string): Uint8Array {
 export interface PdfPhotoRef {
   key: string
   url: string
+  /** 该位置没有专属底片，用第 1 张底片顶替 */
+  fallback?: boolean
 }
 
 export interface PdfBuildInput {
@@ -112,17 +114,28 @@ async function buildSheetPage(
   // 照片
   for (const p of sheet.placements) {
     const ref = input.photoOf(p)
+    const cx = px(p.x + p.w / 2)
+    const cy = py(p.y + p.h / 2)
     const raster = ref ? photoRasters.get(ref.key) : undefined
     if (raster) {
       addImage(raster, p.x, p.y, p.w, p.h)
+      if (ref?.fallback) {
+        // 顶替位置：半透明白罩弱化底片，提示这张并非专属底片
+        body.push('q 0.55 g')
+        body.push(`${n2(px(p.x))} ${n2(py(p.y + p.h))} ${n2(px(p.w))} ${n2(px(p.h))} re f Q`)
+        const tagW = Math.min(p.w, 12)
+        body.push('q 0.95 0.88 0.75 rg')
+        body.push(
+          `${n2(px(p.x + (p.w - tagW) / 2))} ${n2(py(p.y + 4.2))} ${n2(px(tagW))} ${n2(px(3.2))} re f Q`,
+        )
+        body.push(text(cx, py(p.y + 2.4), 'fallback', 2.6, true, true))
+      }
     } else {
       body.push('q 0.92 0.94 0.97 rg')
       body.push(`${n2(px(p.x))} ${n2(py(p.y + p.h))} ${n2(px(p.w))} ${n2(px(p.h))} re f Q`)
     }
     body.push('q 0.4 w 0.45 0.5 0.58 RG')
     body.push(`${n2(px(p.x))} ${n2(py(p.y + p.h))} ${n2(px(p.w))} ${n2(px(p.h))} re S Q`)
-    const cx = px(p.x + p.w / 2)
-    const cy = py(p.y + p.h / 2)
     body.push(text(cx, cy, `#${p.seq}`, Math.min(9, Math.max(5, p.h * 0.9)), true, true))
     body.push(
       text(cx, cy - Math.min(9, Math.max(5, p.h * 0.9)) * 1.15, asciiOnly(input.sizeLabelOf(p)), 4.6, false, true),
