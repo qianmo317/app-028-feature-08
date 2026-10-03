@@ -3,10 +3,22 @@
  */
 import { validateCutSequence, type CutLine, type Rect } from './guillotine'
 import { BUILTIN_PAPERS, BUILTIN_PHOTO_SIZES } from './library'
+import { rotationAdvice } from './orientation'
 import { pack, sheetsFromPlacements, usableRegion, type PackGroup, type PackOptions } from './packer'
 import { buildPdf } from './pdf'
+import {
+  clearItemPhoto,
+  clearItemPhotos,
+  filledCopyCount,
+  getItemPhoto,
+  makePhotoResolver,
+  photoKey,
+  pruneItemPhotos,
+  setItemPhoto,
+  validateItemPhotos,
+} from '../store'
 import { MM_TO_PT, mmToPt, mmToPx, pxToMm } from './units'
-import type { Paper, Placement, Sheet } from './types'
+import type { Item, Paper, Placement, PhotoRef, Sheet, Task } from './types'
 
 export interface AssertionResult {
   id: string
@@ -482,6 +494,174 @@ function assertPerformance(): AssertionResult {
   }
 }
 
+/** ⑧ 底片方向建议：横底片 + 竖成品时，旋转 90° 的省纸张数试算正确；方向一致时不误报 */
+function assertOrientationAdvice(): AssertionResult {
+  const t0 = performance.now()
+  const problems: string[] = []
+  const paper = BUILTIN_PAPERS.find((p) => p.id === 'p4x6') as Paper
+  const small2 = BUILTIN_PHOTO_SIZES.find((s) => s.id === 's2cun_s')! // 35×45 竖
+  const base = {
+    paper: { wMm: paper.wMm, hMm: paper.hMm, marginMm: paper.marginMm },
+    safeEdgeMm: 0,
+    gapMm: 0,
+    kerfMm: 0,
+    allowRotate: false,
+  }
+  const landscapeRef: PhotoRef = { name: 'w.jpg', wPx: 900, hPx: 600, landscape: true }
+
+  // 用排样器核实基准：竖成品 8 张需 2 张相纸、横摆 8 张只需 1 张
+  const vertical = pack(
+    [{ itemId: 't', copies: 8, photoW: 35, photoH: 45, allowRotate: false, keepTogether: false }],
+    { paperW: paper.wMm, paperH: paper.hMm, marginMm: paper.marginMm, safeEdgeMm: 0, gapMm: 0, kerfMm: 0, allowRotate: false },
+  ).result.stats.sheets
+  const sideways = pack(
+    [{ itemId: 't', copies: 8, photoW: 45, photoH: 35, allowRotate: false, keepTogether: false }],
+    { paperW: paper.wMm, paperH: paper.hMm, marginMm: paper.marginMm, safeEdgeMm: 0, gapMm: 0, kerfMm: 0, allowRotate: false },
+  ).result.stats.sheets
+
+  const advice = rotationAdvice({ ...base, size: small2, ref: landscapeRef, copies: 8 })
+  if (!advice.mismatch) problems.push('横底片 + 竖成品应判为方向不匹配')
+  if (advice.portraitSheets !== vertical || advice.rotatedSheets !== sideways) {
+    problems.push(`试算张数与排样器不一致：建议 ${advice.portraitSheets}→${advice.rotatedSheets}，实际 ${vertical}→${sideways}`)
+  }
+  if (advice.savedSheets !== vertical - sideways) {
+    problems.push(`省纸张数应为 ${vertical - sideways}，实际 ${advice.savedSheets}`)
+  }
+  if (!advice.longEdge || advice.longEdge !== 'width') {
+    problems.push('横底片旋转后应建议长边平行相纸宽边（横着摆）')
+  }
+  if (!advice.message.includes('旋转') || !advice.message.includes('宽边')) {
+    problems.push('建议文案必须说明旋转与按哪一边摆')
+  }
+
+  // 方向一致（竖底片 + 竖成品）时不应给出任何建议
+  const portraitRef: PhotoRef = { name: 'h.jpg', wPx: 600, hPx: 900, landscape: false }
+  const ok = rotationAdvice({ ...base, size: small2, ref: portraitRef, copies: 8 })
+  if (ok.mismatch || ok.message) problems.push('方向一致时不应提示旋转')
+
+  // 方形底片不算不匹配
+  const sq: PhotoRef = { name: 'sq.jpg', wPx: 500, hPx: 500, landscape: false }
+  if (rotationAdvice({ ...base, size: small2, ref: sq, copies: 1 }).mismatch) {
+    problems.push('方形底片不应判为方向不匹配')
+  }
+
+  return {
+    id: 'orientation',
+    title: '⑧ 底片方向建议：横底片配竖成品时按排样器试算省纸张数并说明摆法',
+    pass: problems.length === 0,
+    detail: problems.length
+      ? problems.join('；')
+      : `8 张小 2 寸（35×45）在 4×6 相纸上：竖摆 ${vertical} 张 → 旋转 90° 横摆 ${sideways} 张（少用 ${vertical - sideways} 张，长边平行宽边）；方向一致/方形均不误报`,
+    ms: Math.round(performance.now() - t0),
+  }
+}
+
+/**
+ * ⑨ 底片逐位指定与清理：
+ * 「只出现一次」时每个副本位各用各的底片；空位移交第 1 张需要显式允许；
+ * 删除行/减少数量必须把对应底片从内存清掉（含 objectURL 回收）。
+ */
+async function assertPhotoSlots(): Promise<AssertionResult> {
+  const t0 = performance.now()
+  const problems: string[] = []
+
+  // 内存 URL：浏览器环境可用 blob:；Node/jsdom 下 createObjectURL 可能不存在，做个替身
+  const blobUrl = (tag: string) =>
+    typeof URL.createObjectURL === 'function'
+      ? URL.createObjectURL(new Blob([tag]))
+      : `blob:fake/${tag}`
+  const ref = (name: string): PhotoRef => ({ name, wPx: 100, hPx: 100, landscape: false })
+
+  const item: Item = {
+    id: 'slot-item',
+    sizeId: 's1cun',
+    qty: 3,
+    rotateAllowed: false,
+    repeatSamePhoto: false,
+    keepTogether: false,
+  }
+  for (let ci = 0; ci < 3; ci++) {
+    setItemPhoto(photoKey(item.id, ci), blobUrl(`p${ci}`), ref(`p${ci}.jpg`))
+  }
+  if (filledCopyCount(item.id) !== 3) problems.push('逐位导入 3 张底片后已选数应为 3')
+
+  // 用 3 个 placement 模拟排样结果（seq 1..3 依次对应副本 0..2）
+  const mkPlacement = (seq: number): Placement => ({
+    itemId: item.id,
+    sheetIndex: 0,
+    x: 0,
+    y: 0,
+    w: 25,
+    h: 35,
+    rotated: false,
+    seq,
+  })
+  const sheet: Sheet = {
+    index: 0,
+    placements: [mkPlacement(1), mkPlacement(2), mkPlacement(3)],
+    cutSteps: [],
+    rawCutCount: 0,
+    usedAreaMm2: 0,
+    sheetAreaMm2: 1,
+    utilization: 0,
+    wasteRects: [],
+  }
+  const task = { items: [item] } as unknown as Task
+
+  // 三位齐备：各自解析到自己的底片
+  let resolve = makePhotoResolver(task, [sheet])
+  const r0 = resolve(sheet.placements[0])
+  const r1 = resolve(sheet.placements[1])
+  if (!r0 || !r1 || r0.url === r1.url) problems.push('「只出现一次」时第 1、2 张应分别用各自的底片')
+
+  // 删掉第 2 张底片且不允许顶替：该位解析为空（绝不悄悄用第 1 张）
+  clearItemPhoto(photoKey(item.id, 1))
+  resolve = makePhotoResolver(task, [sheet])
+  if (resolve(sheet.placements[1]) !== undefined) {
+    problems.push('空位在未授权顶替时不应回退到第 1 张底片')
+  }
+  // 齐备性校验必须拦住
+  const blocked = validateItemPhotos([item], () => '1 寸')
+  if (!blocked) problems.push('有空位且未授权顶替时应拦截排样')
+
+  // 显式允许顶替：第 2 张用回第 1 张，且第 3 张仍是自己
+  item.photoFallback = true
+  resolve = makePhotoResolver(task, [sheet])
+  const fallback = resolve(sheet.placements[1])
+  const own = resolve(sheet.placements[2])
+  if (!fallback || !own || fallback.url !== r0?.url || own.url === r0?.url) {
+    problems.push('允许顶替后空位才用第 1 张，已选位仍必须用各自的底片')
+  }
+  if (validateItemPhotos([item], () => '1 寸')) problems.push('已授权顶替且第 1 张存在时不应再拦截')
+
+  // 一张都没有，即使勾了顶替也要拦（没有可顶替的第 1 张）
+  clearItemPhotos(item.id)
+  if (!validateItemPhotos([item], () => '1 寸')) problems.push('第 1 张缺失时不允许只靠顶替过关')
+
+  // 数量改小：超出的底片位必须清掉
+  setItemPhoto(photoKey(item.id, 0), blobUrl('a'), ref('a.jpg'))
+  setItemPhoto(photoKey(item.id, 1), blobUrl('b'), ref('b.jpg'))
+  setItemPhoto(photoKey(item.id, 2), blobUrl('c'), ref('c.jpg'))
+  pruneItemPhotos(item.id, 2)
+  if (filledCopyCount(item.id) !== 2 || getItemPhoto(photoKey(item.id, 2))) {
+    problems.push('数量改为 2 后第 3 张底片必须一起清掉')
+  }
+
+  // 删除整行：底片全部清空，不能残留在内存
+  clearItemPhotos(item.id)
+  if (filledCopyCount(item.id) !== 0) problems.push('删除清单行后对应底片应全部清除')
+
+  return {
+    id: 'photoSlots',
+    title: '⑨ 底片逐位指定：各副本各用各的；空位默认拦截、授权后才用第 1 张顶替；删行/减量同步清底片',
+    pass: problems.length === 0,
+    detail: problems.length
+      ? problems.join('；')
+      : '3 个副本位分别解析到 3 张底片；删第 2 张后未授权时为空位并被校验拦下；授权顶替后才回退第 1 张、第 3 张不变；减量与删行都把对应底片（含 objectURL）清掉',
+    ms: Math.round(performance.now() - t0),
+  }
+}
+
 export async function runSelfTest(): Promise<AssertionResult[]> {
   const results: AssertionResult[] = []
   results.push(assertGuillotine())
@@ -501,5 +681,17 @@ export async function runSelfTest(): Promise<AssertionResult[]> {
     })
   }
   results.push(assertPerformance())
+  results.push(assertOrientationAdvice())
+  try {
+    results.push(await assertPhotoSlots())
+  } catch (e) {
+    results.push({
+      id: 'photoSlots',
+      title: '⑨ 底片逐位指定与清理',
+      pass: false,
+      detail: `异常：${e instanceof Error ? e.message : String(e)}`,
+      ms: 0,
+    })
+  }
   return results
 }

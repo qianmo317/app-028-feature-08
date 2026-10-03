@@ -35,6 +35,11 @@ export interface Item {
   rotateAllowed: boolean
   /** true = 同一张照片重复排；false = 一张照片只出现一次（每张各需一张底片） */
   repeatSamePhoto: boolean
+  /**
+   * 「只出现一次」且仍有空底片位时：
+   * true = 空着的位置用第 1 张底片顶替；false（默认）= 不允许，必须补齐或减少数量
+   */
+  photoFallback?: boolean
   /** true = 该尺寸的照片尽量不拆散，排在同一张相纸上 */
   keepTogether: boolean
   photo?: PhotoRef

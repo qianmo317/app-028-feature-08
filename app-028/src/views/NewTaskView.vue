@@ -6,20 +6,26 @@ import {
   allPapers,
   allSizes,
   clearItemPhoto,
+  clearItemPhotos,
   createTask,
   deleteTask,
+  filledCopyCount,
   getItemPhoto,
   leftovers,
   markLeftoverUsed,
   photoKey,
   photoVersion,
+  pruneItemPhotos,
   runPack,
   setItemPhoto,
   settings,
   tasks,
   templates,
+  validateItemPhotos,
 } from '../store'
 import { findPhotoSize, newId } from '../logic/library'
+import { loadImage } from '../logic/image'
+import { rotationAdvice, type OrientationAdvice } from '../logic/orientation'
 import { formatCents, formatPercent } from '../logic/units'
 import type { Item, Paper, PhotoRef, Task } from '../logic/types'
 
@@ -50,10 +56,108 @@ const error = ref('')
 const hint = ref('')
 const newSize = reactive({ name: '', wMm: 50, hMm: 70 })
 
+/** 提交时未选齐底片而被拦下的清单行（用来把空位标红） */
+const blockedIds = ref<Set<string>>(new Set())
+/** 拖拽悬停中的底片条（高亮拖放区） */
+const dragOverId = ref('')
+/** 拖入/拖出计数：避免在子元素间移动时高亮闪烁 */
+const dragDepth = new Map<string, number>()
+
+function dragEnter(id: string) {
+  dragDepth.set(id, (dragDepth.get(id) ?? 0) + 1)
+  dragOverId.value = id
+}
+
+function dragLeave(id: string) {
+  const n = Math.max(0, (dragDepth.get(id) ?? 1) - 1)
+  dragDepth.set(id, n)
+  if (n === 0) {
+    dragDepth.delete(id)
+    if (dragOverId.value === id) dragOverId.value = ''
+  }
+}
+
+function dragDrop(id: string) {
+  dragDepth.delete(id)
+  if (dragOverId.value === id) dragOverId.value = ''
+}
+/** 每个隐藏 file input 本次选择从哪个位开始：-1 = 按顺序填空位 */
+const pickStart = new Map<string, number>()
+
+function slotCount(item: Item): number {
+  const n = Math.floor(item.qty)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return item.repeatSamePhoto ? 1 : n
+}
+
 /** 读取内存照片（依赖 photoVersion 触发重绘） */
-function thumb(key: string): string | undefined {
+function slotUrl(item: Item, copyIndex: number): string | undefined {
   void photoVersion.value
-  return getItemPhoto(key)?.url
+  return getItemPhoto(photoKey(item.id, copyIndex))?.url
+}
+
+function slotRef(item: Item, copyIndex: number): PhotoRef | undefined {
+  void photoVersion.value
+  return getItemPhoto(photoKey(item.id, copyIndex))?.ref
+}
+
+function firstFilledRef(item: Item): PhotoRef | undefined {
+  for (let i = 0; i < slotCount(item); i++) {
+    const r = slotRef(item, i)
+    if (r) return r
+  }
+  return undefined
+}
+
+function filledOf(item: Item): number {
+  void photoVersion.value
+  return filledCopyCount(item.id)
+}
+
+function isMissing(item: Item, copyIndex: number): boolean {
+  if (item.repeatSamePhoto || !blockedIds.value.has(item.id)) return false
+  return !slotUrl(item, copyIndex)
+}
+
+/** 每行一条：底片方向与成品方向不匹配时的省纸试算建议 */
+const advices = computed(() => {
+  void photoVersion.value
+  const map = new Map<string, OrientationAdvice>()
+  for (const item of draft.items) {
+    if (item.qty <= 0) continue
+    const refInfo = firstFilledRef(item)
+    const size = findPhotoSize(allSizes.value, item.sizeId)
+    if (!refInfo || !size) continue
+    const others = draft.items
+      .filter((o) => o.id !== item.id && o.qty > 0)
+      .map((o) => ({ size: findPhotoSize(allSizes.value, o.sizeId), copies: o.qty }))
+      .filter((o): o is { size: NonNullable<typeof o.size>; copies: number } => !!o.size)
+    map.set(
+      item.id,
+      rotationAdvice({
+        size,
+        ref: refInfo,
+        copies: item.qty,
+        paper: currentPaper.value,
+        safeEdgeMm: draft.safeEdgeMm,
+        gapMm: draft.gapMm,
+        kerfMm: draft.kerfMm,
+        allowRotate: draft.allowRotate && item.rotateAllowed,
+        others,
+      }),
+    )
+  }
+  return map
+})
+
+function canEnableRotation(item: Item): boolean {
+  return !draft.allowRotate || !item.rotateAllowed
+}
+
+function enableRotation(item: Item) {
+  draft.allowRotate = true
+  item.rotateAllowed = true
+  hint.value = '已勾选「允许旋转」，排样器会按省纸方向自动旋转 90°'
 }
 
 const currentPaper = computed<Paper>(() =>
@@ -87,7 +191,31 @@ function addItem(sizeId?: string) {
 }
 
 function removeItem(id: string) {
+  // 底片存在内存里，行没了底片必须一起清掉（含 objectURL）
+  clearItemPhotos(id)
+  blockedIds.value.delete(id)
   draft.items = draft.items.filter((i) => i.id !== id)
+}
+
+function clearAllItems() {
+  for (const i of draft.items) clearItemPhotos(i.id)
+  blockedIds.value = new Set()
+  draft.items = []
+}
+
+function onQtyChange(item: Item) {
+  blockedIds.value.delete(item.id)
+  pruneItemPhotos(item.id, Math.max(0, Math.floor(item.qty) || 0))
+  if (slotCount(item) === 0 && item.photo) item.photo = undefined
+}
+
+function onPhotoModeChange(item: Item) {
+  blockedIds.value.delete(item.id)
+  if (item.repeatSamePhoto) {
+    // 改成「重复排」后，第 2 张及以后的底片不再使用
+    pruneItemPhotos(item.id, 1)
+    if (!slotUrl(item, 0)) item.photo = undefined
+  }
 }
 
 function onSizeChange(item: Item) {
@@ -98,6 +226,7 @@ function onSizeChange(item: Item) {
 function applyTemplate(tplId: string) {
   const tpl = templates.value.find((t) => t.id === tplId)
   if (!tpl) return
+  clearAllItems()
   draft.paperId = tpl.paperId
   draft.name = tpl.name
   draft.items = tpl.items.map((i) => ({
@@ -111,42 +240,101 @@ function applyTemplate(tplId: string) {
   hint.value = `已套用模板「${tpl.name}」`
 }
 
-async function pickFile(item: Item, copyIndex: number, ev: Event) {
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
-  error.value = ''
+/** 在本机解码一张图片，只读尺寸与方向（objectURL 保留在内存，不上传） */
+async function readPhotoFile(file: File): Promise<{ url: string; ref: PhotoRef }> {
+  const url = URL.createObjectURL(file)
   try {
-    const url = URL.createObjectURL(file)
-    const img = new Image()
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve()
-      img.onerror = () => reject(new Error('decode'))
-      img.src = url
-    })
-    const refInfo: PhotoRef = {
-      name: file.name,
-      wPx: img.naturalWidth,
-      hPx: img.naturalHeight,
-      landscape: img.naturalWidth > img.naturalHeight,
+    const img = await loadImage(url)
+    return {
+      url,
+      ref: {
+        name: file.name,
+        wPx: img.naturalWidth,
+        hPx: img.naturalHeight,
+        landscape: img.naturalWidth > img.naturalHeight,
+      },
     }
-    setItemPhoto(photoKey(item.id, copyIndex), url, refInfo)
-    if (copyIndex === 0) item.photo = refInfo
-    const s = findPhotoSize(allSizes.value, item.sizeId)
-    if (s && refInfo.landscape && s.hMm > s.wMm && !item.rotateAllowed) {
-      hint.value = `「${s.name}」底片是横向的，可勾选「允许旋转」让排样器自动转 90° 试试`
-    } else {
-      hint.value = `已在本机读取「${file.name}」：${img.naturalWidth}×${img.naturalHeight}px（不会上传）`
-    }
-  } catch {
-    error.value = '照片文件读取失败，请换一张图片（仅在本机内存中读取尺寸与方向）'
+  } catch (e) {
+    URL.revokeObjectURL(url)
+    throw e
   }
+}
+
+/** 点击某个底片位 / 批量按钮：打开隐藏的多选 file input */
+function openPicker(item: Item, start: number) {
+  pickStart.set(item.id, start)
+  const el = document.getElementById(`filein-${item.id}`) as HTMLInputElement | null
+  el?.click()
+}
+
+async function onFilesPicked(item: Item, ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
   input.value = ''
+  if (!files.length) return
+  const start = pickStart.get(item.id) ?? -1
+  await assignFiles(item, files, start)
+}
+
+/**
+ * 多张文件按顺序填进底片位。
+ * start = -1：从第 1 个空位开始，只填空位，不覆盖已选；
+ * start >= 0：从指定位开始顺序放入（拖到某位/点某位，会覆盖该位）。
+ */
+async function assignFiles(item: Item, files: File[], start: number) {
+  error.value = ''
+  blockedIds.value.delete(item.id)
+  const n = slotCount(item)
+  let targets: number[]
+  if (start >= 0) {
+    targets = Array.from({ length: Math.min(files.length, n - start) }, (_, k) => start + k)
+  } else {
+    const empties: number[] = []
+    for (let i = 0; i < n; i++) if (!slotUrl(item, i)) empties.push(i)
+    targets = empties.slice(0, files.length)
+  }
+  const extra = files.length - targets.length
+  let failed = 0
+  const decoded = await Promise.all(
+    files.slice(0, targets.length).map((f) => readPhotoFile(f).catch(() => undefined)),
+  )
+  decoded.forEach((d, k) => {
+    if (!d) {
+      failed++
+      return
+    }
+    const ci = targets[k]
+    setItemPhoto(photoKey(item.id, ci), d.url, d.ref)
+    if (ci === 0) item.photo = d.ref
+  })
+  if (failed) {
+    error.value = `${failed} 个文件读取失败，请换用常见图片格式（仅在本机内存中读取尺寸与方向）`
+  } else {
+    hint.value = `已在本机读取 ${targets.length} 张底片（不会上传）`
+  }
+  if (extra > 0) {
+    hint.value = `底片位只有 ${n} 个，多出的 ${extra} 张没有放入；可先增加数量，或删掉重选`
+  }
+}
+
+function onStripDrop(item: Item, ev: DragEvent) {
+  dragDrop(item.id)
+  const files = Array.from(ev.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'))
+  if (!files.length) return
+  void assignFiles(item, files, -1)
+}
+
+function onSlotDrop(item: Item, copyIndex: number, ev: DragEvent) {
+  dragDrop(item.id)
+  const files = Array.from(ev.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'))
+  if (!files.length) return
+  void assignFiles(item, files, copyIndex)
 }
 
 function removeFile(item: Item, copyIndex: number) {
   clearItemPhoto(photoKey(item.id, copyIndex))
   if (copyIndex === 0) item.photo = undefined
+  blockedIds.value.delete(item.id)
 }
 
 function useLeftover(id: string) {
@@ -185,6 +373,10 @@ function addSize() {
   addItem(s.id)
 }
 
+function itemDisplayName(item: Item): string {
+  return findPhotoSize(allSizes.value, item.sizeId)?.name ?? '自定义尺寸'
+}
+
 function submit() {
   error.value = ''
   hint.value = ''
@@ -194,6 +386,17 @@ function submit() {
   }
   if (draft.items.some((i) => i.qty <= 0)) {
     error.value = '照片数量必须大于 0'
+    return
+  }
+  // 「一张只出现一次」时逐位校验底片：没选齐要么拦截，要么用户已勾选「用第 1 张顶替」
+  const photoErr = validateItemPhotos(draft.items, itemDisplayName)
+  if (photoErr) {
+    blockedIds.value = new Set(
+      draft.items
+        .filter((i) => !i.repeatSamePhoto && i.qty > 0 && filledOf(i) < i.qty && !(i.photoFallback && filledOf(i) > 0))
+        .map((i) => i.id),
+    )
+    error.value = photoErr
     return
   }
   const task: Task = createTask({
@@ -346,13 +549,13 @@ function taskPaperName(t: Task) {
             ② 照片清单
             <span class="row tight">
               <button class="btn small" @click="addItem()">+ 添加一行</button>
-              <button class="btn small" :disabled="!draft.items.length" @click="draft.items = []">
+              <button class="btn small" :disabled="!draft.items.length" @click="clearAllItems">
                 清空
               </button>
             </span>
           </h3>
           <div class="card-sub">
-            尺寸库为毫米；底片只在浏览器内存里读尺寸与方向，不上传服务器
+            尺寸库为毫米；底片只在浏览器内存里读尺寸与方向，不上传服务器。选「只出现一次」后每一张都要单独指定底片，可一次多选/拖入多张按顺序填入
           </div>
           <div v-if="!draft.items.length" class="note">还没有照片，点「+ 添加一行」或直接套用下方证件照模板</div>
           <table v-else class="data">
@@ -362,8 +565,8 @@ function taskPaperName(t: Task) {
                 <th class="num" style="width: 76px">数量</th>
                 <th>旋转</th>
                 <th>不拆散</th>
-                <th>底片</th>
-                <th>本机照片文件</th>
+                <th>底片模式</th>
+                <th>底片（按顺序逐位指定）</th>
                 <th></th>
               </tr>
             </thead>
@@ -377,7 +580,13 @@ function taskPaperName(t: Task) {
                   </select>
                 </td>
                 <td>
-                  <input v-model.number="item.qty" type="number" min="1" step="1" />
+                  <input
+                    v-model.number="item.qty"
+                    type="number"
+                    min="1"
+                    step="1"
+                    @change="onQtyChange(item)"
+                  />
                 </td>
                 <td>
                   <input v-model="item.rotateAllowed" type="checkbox" title="允许旋转 90°" />
@@ -386,36 +595,130 @@ function taskPaperName(t: Task) {
                   <input v-model="item.keepTogether" type="checkbox" title="该尺寸尽量排在同一张相纸上" />
                 </td>
                 <td>
-                  <select v-model="item.repeatSamePhoto">
-                    <option :value="true">重复排</option>
-                    <option :value="false">只出现一次</option>
+                  <select v-model="item.repeatSamePhoto" @change="onPhotoModeChange(item)">
+                    <option :value="true">重复排（共用 1 张）</option>
+                    <option :value="false">只出现一次（每张各 1 张）</option>
                   </select>
                 </td>
-                <td>
-                  <div class="row tight">
-                    <img
-                      v-if="thumb(photoKey(item.id, 0))"
-                      :src="thumb(photoKey(item.id, 0))"
-                      alt=""
-                      style="width: 34px; height: 34px; object-fit: cover; border: 1px solid var(--line); border-radius: 4px"
-                    />
-                    <input
-                      type="file"
-                      accept="image/*"
-                      style="width: 150px"
-                      @change="pickFile(item, 0, $event)"
-                    />
+                <td class="film-cell">
+                  <!-- 隐藏的多选文件框，两个入口共用：批量填空位 / 从某位开始覆盖 -->
+                  <input
+                    :id="`filein-${item.id}`"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    class="file-hidden"
+                    @change="onFilesPicked(item, $event)"
+                  />
+
+                  <div
+                    class="film-strip"
+                    :class="{ dragover: dragOverId === item.id }"
+                    @dragenter.prevent="dragEnter(item.id)"
+                    @dragover.prevent
+                    @dragleave.prevent="dragLeave(item.id)"
+                    @drop.prevent="onStripDrop(item, $event)"
+                  >
                     <button
-                      v-if="thumb(photoKey(item.id, 0))"
-                      class="btn small"
-                      @click="removeFile(item, 0)"
+                      type="button"
+                      class="btn small film-add"
+                      title="多选照片，按顺序填进空底片位"
+                      @click="openPicker(item, -1)"
                     >
-                      移除
+                      + 多选
+                    </button>
+
+                    <button
+                      v-for="ci in slotCount(item)"
+                      :key="ci - 1"
+                      type="button"
+                      class="film-slot"
+                      :class="{
+                        missing: isMissing(item, ci - 1),
+                        filled: !!slotUrl(item, ci - 1),
+                        'is-over': dragOverId === item.id,
+                      }"
+                      :title="
+                        slotRef(item, ci - 1)
+                          ? `第 ${ci} 张：${slotRef(item, ci - 1)?.name}（${slotRef(item, ci - 1)?.wPx}×${slotRef(item, ci - 1)?.hPx}px，${slotRef(item, ci - 1)?.landscape ? '横向' : '纵向'}）；点击可替换`
+                          : `第 ${ci} 张底片：未选；点击选文件，或把照片拖进来`
+                      "
+                      @click="openPicker(item, ci - 1)"
+                      @dragover.prevent
+                      @drop.prevent.stop="onSlotDrop(item, ci - 1, $event)"
+                    >
+                      <img v-if="slotUrl(item, ci - 1)" :src="slotUrl(item, ci - 1)" alt="" />
+                      <template v-else>
+                        <span class="film-no">{{ ci }}</span>
+                        <span
+                          v-if="item.photoFallback && slotUrl(item, 0)"
+                          class="film-tail"
+                        >
+                          ①顶
+                        </span>
+                      </template>
+                      <span
+                        v-if="isMissing(item, ci - 1) && !slotUrl(item, ci - 1)"
+                        class="film-bang"
+                      >
+                        !
+                      </span>
+                      <span
+                        v-if="slotUrl(item, ci - 1)"
+                        class="film-x"
+                        title="移除这张底片"
+                        @click.stop.prevent="removeFile(item, ci - 1)"
+                      >
+                        ×
+                      </span>
                     </button>
                   </div>
-                  <div v-if="item.photo" class="mono" style="font-size: 11px; color: var(--ink-3)">
-                    {{ item.photo.wPx }}×{{ item.photo.hPx }}px
-                    {{ item.photo.landscape ? '横向' : '纵向' }}
+
+                  <div class="film-meta">
+                    <template v-if="item.repeatSamePhoto">
+                      所有副本共用这 1 张底片
+                    </template>
+                    <template v-else>
+                      已选 <strong>{{ filledOf(item) }}</strong> / {{ slotCount(item) }} 张
+                      <span v-if="filledOf(item) < slotCount(item)" class="film-empty">
+                        （空 {{ slotCount(item) - filledOf(item) }} 位）
+                      </span>
+                      <span v-else class="badge ok">已选齐</span>
+                    </template>
+                    <template v-if="firstFilledRef(item)">
+                      · {{ firstFilledRef(item)?.wPx }}×{{ firstFilledRef(item)?.hPx }}px
+                      {{ firstFilledRef(item)?.landscape ? '横向' : '纵向' }}
+                    </template>
+                  </div>
+
+                  <!-- 只出现一次：空位要么用第 1 张顶替，要么直接拦住 -->
+                  <label v-if="!item.repeatSamePhoto" class="check film-fallback">
+                    <input type="checkbox" v-model="item.photoFallback" />
+                    空位用第 1 张底片顶替
+                  </label>
+                  <div
+                    v-if="!item.repeatSamePhoto && item.photoFallback && slotUrl(item, 0)"
+                    class="note warn film-note"
+                  >
+                    未选的副本位将统一使用第 1 张底片（缩略图角标「①顶」）；第 1 张必须先选。
+                  </div>
+
+                  <!-- 本机横/竖方向 vs 成品方向：真实试算后给省纸建议 -->
+                  <div
+                    v-if="advices.get(item.id)?.mismatch"
+                    class="note"
+                    :class="advices.get(item.id)!.savedSheets > 0 ? 'warn' : ''"
+                  >
+                    {{ advices.get(item.id)!.message }}
+                    <button
+                      v-if="canEnableRotation(item) && advices.get(item.id)!.savedSheets > 0"
+                      type="button"
+                      class="btn small"
+                      style="margin-left: 6px"
+                      @click="enableRotation(item)"
+                    >
+                      允许旋转
+                    </button>
                   </div>
                 </td>
                 <td>

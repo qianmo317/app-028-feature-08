@@ -577,6 +577,136 @@ table.data tr:hover td {
   color: var(--ink-3);
 }
 
+/* ---------- 底片条（每张照片一位缩略位） ---------- */
+.file-hidden {
+  display: none;
+}
+.film-cell {
+  min-width: 300px;
+}
+.film-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  max-height: 172px;
+  overflow-y: auto;
+  transition: border-color 0.15s, background 0.15s;
+}
+.film-strip.dragover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+.film-add {
+  align-self: flex-start;
+  height: 44px;
+}
+.film-slot {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: #fafbfd;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.film-slot:hover {
+  border-color: var(--brand);
+}
+.film-slot.filled {
+  border-color: #9fc2f3;
+}
+.film-slot.missing {
+  border: 1.5px solid var(--danger);
+  background: var(--danger-soft);
+}
+.film-slot.is-over {
+  box-shadow: 0 0 0 2px var(--brand);
+}
+.film-slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.film-no {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.film-slot.missing .film-no {
+  color: var(--danger);
+}
+.film-tail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  font-size: 8.5px;
+  line-height: 12px;
+  text-align: center;
+  color: #fff;
+  background: rgba(178, 106, 0, 0.82);
+}
+.film-bang {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+.film-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: rgba(31, 39, 51, 0.78);
+  color: #fff;
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.film-slot:hover .film-x,
+.film-slot:focus-visible .film-x {
+  opacity: 1;
+}
+.film-meta {
+  margin-top: 5px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.film-meta .film-empty {
+  color: var(--warn);
+}
+.film-fallback {
+  margin-top: 4px;
+  white-space: normal;
+  font-size: 12px;
+}
+.film-note {
+  margin-top: 5px;
+}
+
 /* ---------- 打印 ---------- */
 .print-sheet {
   background: #fff;

@@ -20,6 +20,7 @@ import type {
   Placement,
   Settings,
   Sheet,
+  Item,
   Task,
 } from './logic/types'
 
@@ -82,6 +83,63 @@ export function clearItemPhoto(key: string): void {
   photoVersion.value++
 }
 
+/** 解析某条清单项下已导入底片的副本序号（key 形如 itemId#3） */
+function copyIndicesOf(itemId: string): number[] {
+  const out: number[] = []
+  for (const key of photoCache.keys()) {
+    const hash = key.lastIndexOf('#')
+    if (hash <= 0 || key.slice(0, hash) !== itemId) continue
+    const idx = Number(key.slice(hash + 1))
+    if (Number.isInteger(idx)) out.push(idx)
+  }
+  return out
+}
+
+/** 某条清单已选了多少张底片 */
+export function filledCopyCount(itemId: string): number {
+  return copyIndicesOf(itemId).length
+}
+
+/** 数量改小时，把超出新数量的底片位一起清掉（含 objectURL） */
+export function pruneItemPhotos(itemId: string, qty: number): void {
+  for (const idx of copyIndicesOf(itemId)) {
+    if (idx >= qty) clearItemPhoto(photoKey(itemId, idx))
+  }
+}
+
+/** 删除整行时，把这条清单对应的所有底片一起清掉 */
+export function clearItemPhotos(itemId: string): void {
+  for (const idx of copyIndicesOf(itemId)) {
+    clearItemPhoto(photoKey(itemId, idx))
+  }
+}
+
+/**
+ * 底片齐备性校验。
+ * labelOf 给出清单行的显示名；返回第一条问题提示，全部齐备时返回 undefined。
+ */
+export function validateItemPhotos(
+  items: Item[],
+  labelOf: (item: Item) => string,
+): string | undefined {
+  for (const item of items) {
+    if (item.repeatSamePhoto) continue
+    const qty = Math.max(0, Math.floor(item.qty))
+    if (qty <= 0) continue
+    const filled = filledCopyCount(item.id)
+    if (filled >= qty) continue
+    const name = labelOf(item)
+    if (item.photoFallback) {
+      if (filled === 0) {
+        return `「${name}」设为一张只出现一次，至少要先选第 1 张底片，其余 ${qty - 1} 个空位才会用它顶替`
+      }
+      continue
+    }
+    return `「${name}」一张只出现一次，共需 ${qty} 张底片，还有 ${qty - filled} 个空位没选；请逐位选齐/拖入，或勾选「空位用第 1 张顶替」`
+  }
+  return undefined
+}
+
 /** 每张照片（placement）对应第几张底片 */
 export function copyIndexMap(sheets: Sheet[]): Map<number, number> {
   const counter = new Map<string, number>()
@@ -100,11 +158,18 @@ export function copyIndexMap(sheets: Sheet[]): Map<number, number> {
 export function makePhotoResolver(task: Task, sheets: Sheet[]) {
   const map = copyIndexMap(sheets)
   const repeat = new Map(task.items.map((i) => [i.id, i.repeatSamePhoto]))
+  const fallback = new Map(task.items.map((i) => [i.id, i.photoFallback === true]))
   return (p: Placement): { key: string; url: string } | undefined => {
-    const ci = repeat.get(p.itemId) === false ? map.get(p.seq) ?? 0 : 0
-    const k = photoKey(p.itemId, ci)
-    const ph = getItemPhoto(k)
-    return ph ? { key: k, url: ph.url } : undefined
+    const once = repeat.get(p.itemId) === false
+    const ci = once ? map.get(p.seq) ?? 0 : 0
+    let key = photoKey(p.itemId, ci)
+    let ph = getItemPhoto(key)
+    // 允许顶替时，空着的副本位悄悄使用第 1 张底片（并在清单页明确提示过用户）
+    if (!ph && once && ci !== 0 && fallback.get(p.itemId)) {
+      key = photoKey(p.itemId, 0)
+      ph = getItemPhoto(key)
+    }
+    return ph ? { key, url: ph.url } : undefined
   }
 }
 
@@ -138,6 +203,8 @@ export function createTask(partial: Partial<Task> = {}): Task {
 }
 
 export function deleteTask(id: string): void {
+  const t = tasks.value.find((x) => x.id === id)
+  if (t) for (const item of t.items) clearItemPhotos(item.id)
   tasks.value = tasks.value.filter((t) => t.id !== id)
 }
 
